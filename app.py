@@ -8,11 +8,16 @@ import re
 import time
 from datetime import datetime
 
+# ============================================================
+# 页面配置
+# ============================================================
 st.set_page_config(page_title="关键词深度研究档案生成器", layout="wide")
 st.title("📚 关键词深度研究档案生成器")
 st.markdown("输入任意关键词，自动生成结构化调研报告（Word 文档）")
 
-
+# ============================================================
+# API 密钥读取逻辑（优先从 Streamlit Secrets 读取）
+# ============================================================
 def get_secret(key_name):
     try:
         return st.secrets[key_name]
@@ -20,40 +25,58 @@ def get_secret(key_name):
         return None
 
 deepseek_key = get_secret("DEEPSEEK_API_KEY")
-brave_key = get_secret("BRAVE_API_KEY")
+bocha_key = get_secret("BOCHA_API_KEY")
 
-if not deepseek_key or not brave_key:
+# 如果 secrets 里没有，显示侧边栏输入框（本地测试用）
+if not deepseek_key or not bocha_key:
     st.sidebar.header("🔑 API 密钥配置")
     if not deepseek_key:
         deepseek_key = st.sidebar.text_input("DeepSeek API Key", type="password")
-    if not brave_key:
-        brave_key = st.sidebar.text_input("Brave Search API Key", type="password")
+    if not bocha_key:
+        bocha_key = st.sidebar.text_input("Bocha Search API Key", type="password")
     st.sidebar.info("密钥仅保存在当前会话中。")
 
-
-def brave_search(query: str, api_key: str, count: int = 10) -> list:
+# ============================================================
+# 博查搜索 API
+# ============================================================
+def bocha_search(query: str, api_key: str, count: int = 10) -> list:
+    """调用博查搜索 API，返回搜索结果列表"""
     if not api_key:
         return []
-    url = "https://api.search.brave.com/res/v1/web/search"
-    headers = {"X-Subscription-Token": api_key}
-    params = {"q": query, "count": count}
+    
+    url = "https://api.bochaai.com/v1/web-search"
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "query": query,
+        "count": count,
+        "summary": True,       # 开启摘要，便于 AI 提取关键信息
+        "freshness": "noLimit" # 不限时间，获取最新结果
+    }
+    
     try:
-        resp = requests.get(url, headers=headers, params=params, timeout=15)
+        resp = requests.post(url, headers=headers, json=payload, timeout=20)
         resp.raise_for_status()
         data = resp.json()
-        return [
-            {
-                "title": item.get("title", ""),
+        
+        results = []
+        web_pages = data.get("data", {}).get("webPages", {}).get("value", [])
+        for item in web_pages:
+            results.append({
+                "title": item.get("name", ""),
                 "url": item.get("url", ""),
-                "snippet": item.get("description", ""),
-            }
-            for item in data.get("web", {}).get("results", [])
-        ]
+                "snippet": item.get("summary", "") or item.get("snippet", ""),
+            })
+        return results
     except Exception as e:
-        st.error(f"Brave 搜索失败：{e}")
+        st.error(f"博查搜索失败：{e}")
         return []
 
-
+# ============================================================
+# DeepSeek 生成 API
+# ============================================================
 def deepseek_generate(prompt: str, api_key: str) -> str:
     if not api_key:
         return ""
@@ -76,7 +99,9 @@ def deepseek_generate(prompt: str, api_key: str) -> str:
         st.error(f"DeepSeek API 调用失败：{e}")
         return ""
 
-
+# ============================================================
+# Word 文档生成
+# ============================================================
 def create_word_doc(title: str, content: str) -> BytesIO:
     doc = docx.Document()
     for section in doc.sections:
@@ -108,7 +133,7 @@ def create_word_doc(title: str, content: str) -> BytesIO:
 
     doc.add_page_break()
     doc.add_heading("附录：数据来源", level=2)
-    doc.add_paragraph("本报告基于 Brave Search 返回的公开搜索结果，并结合 DeepSeek 模型知识生成。")
+    doc.add_paragraph("本报告基于博查搜索返回的公开结果，并结合 DeepSeek 模型知识生成。")
     doc.add_paragraph("具体引用链接请查阅报告中提及的 URL。")
 
     bio = BytesIO()
@@ -116,7 +141,9 @@ def create_word_doc(title: str, content: str) -> BytesIO:
     bio.seek(0)
     return bio
 
-
+# ============================================================
+# 构建提示词
+# ============================================================
 def build_prompt(keyword: str, results: list) -> str:
     if results:
         search_text = ""
@@ -134,17 +161,19 @@ def build_prompt(keyword: str, results: list) -> str:
 
 请开始撰写报告，直接输出正文。正文使用中文，每部分之间用空行分隔。一级标题必须严格以“一、”“二、”……开头。"""
 
-
+# ============================================================
+# 主界面逻辑
+# ============================================================
 keyword = st.text_input("请输入要研究的关键词", placeholder="例如：算法推荐、信息茧房、网络暴力...")
 generate_btn = st.button("🚀 生成报告", type="primary")
 
 if generate_btn and keyword.strip():
-    if not deepseek_key or not brave_key:
+    if not deepseek_key or not bocha_key:
         st.warning("请先配置 API 密钥！")
         st.stop()
 
     with st.spinner("正在搜索相关信息..."):
-        results = brave_search(keyword.strip(), brave_key, count=10)
+        results = bocha_search(keyword.strip(), bocha_key, count=10)
 
     with st.spinner("正在综合分析并撰写报告（约 30-60 秒）..."):
         prompt = build_prompt(keyword.strip(), results)
@@ -171,4 +200,4 @@ elif generate_btn:
     st.warning("请输入关键词！")
 
 st.markdown("---")
-st.caption("提示：报告基于 Brave 搜索结果与 DeepSeek 模型知识，仅供参考。")
+st.caption("提示：报告基于博查搜索结果与 DeepSeek 模型知识，仅供参考。")
